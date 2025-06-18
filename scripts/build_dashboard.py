@@ -31,6 +31,26 @@ def init_db() -> None:
     )
     con.close()
 
+def ensure_view(con):
+    """
+    Create a view `attendance_week` that adds a proper DATE column
+    (Monday of each NFL week) and a simplified `attendance` field.
+    """
+    con.execute(
+        """
+        CREATE OR REPLACE VIEW attendance_week AS
+        SELECT
+            team,
+            team_name,
+            year,
+            week,
+            -- Monday of the given ISO week becomes our date
+            STRPTIME(year || '-' || week || '-1', '%Y-%W-%w') AS game_date,
+            weekly_attendance AS attendance
+        FROM attendance
+        WHERE weekly_attendance IS NOT NULL
+        """
+    )
 
 # ──────────────────────────────────────────────────────────────
 # 2. Queries
@@ -38,43 +58,46 @@ def init_db() -> None:
 def rolling(con, team: str) -> pd.DataFrame:
     query = f"""
         WITH base AS (
-            SELECT date, attendance, capacity,
-                   ROW_NUMBER() OVER (ORDER BY date) rn
-            FROM attendance
-            WHERE team = '{team}'
+            SELECT
+                game_date,
+                attendance,
+                ROW_NUMBER() OVER (ORDER BY game_date) rn
+            FROM attendance_week
+            WHERE team_name = '{team}'
         )
-        SELECT date,
-               AVG(attendance) OVER (ORDER BY rn
-                                     ROWS BETWEEN 2 PRECEDING
-                                     AND CURRENT ROW) AS roll_att,
-               AVG(capacity) OVER (ORDER BY rn
-                                   ROWS BETWEEN 2 PRECEDING
-                                   AND CURRENT ROW) AS roll_cap
+        SELECT
+            game_date,
+            AVG(attendance) OVER (
+                ORDER BY rn
+                ROWS BETWEEN 2 PRECEDING AND CURRENT ROW
+            ) AS roll_att
         FROM base
-        ORDER BY date;
+        ORDER BY game_date;
     """
     return con.execute(query).fetchdf()
 
 
 def weekday(con, team: str) -> pd.DataFrame:
     query = f"""
-        SELECT STRFTIME(date,'%w') AS weekday,
-               CAST(STRFTIME(date,'%Y') AS INT) AS season,
-               AVG(attendance * 1.0 / capacity) AS sell
-        FROM attendance
-        WHERE team = '{team}'
-        GROUP BY 1,2
-        ORDER BY 2,1;
+        SELECT
+            STRFTIME(game_date, '%w') AS weekday,
+            year,
+            AVG(attendance) AS avg_att
+        FROM attendance_week
+        WHERE team_name = '{team}'
+        GROUP BY 1, 2
+        ORDER BY 2, 1;
     """
     return con.execute(query).fetchdf()
 
 
 def annual(con, team: str) -> pd.DataFrame:
     query = f"""
-        SELECT CAST(STRFTIME(date,'%Y') AS INT) AS season,
-               AVG(attendance * 1.0 / capacity) AS sell
-        FROM attendance
-        WHERE team = '{team}'
+        SELECT
+            year,
+            SUM(attendance) / 1000.0 AS total_att_k
+        FROM attendance_week
+        WHERE team_name = '{team}'
         GROUP BY 1
         ORDER BY 1;
     """
@@ -116,6 +139,8 @@ def ensure_table(con):
         )
         print("✔ attendance table created (DuckDB)")
 
+
+
 def build_dashboard(team: str = "Dallas Cowboys") -> None:
     if not ATT_CSV.exists():
         raise FileNotFoundError("attendance.csv missing – run fetch_data.py first")
@@ -125,26 +150,42 @@ def build_dashboard(team: str = "Dallas Cowboys") -> None:
 
     con = duckdb.connect(DB_PATH, read_only=True)
     ensure_table(con)
+    ensure_view(con)
 
     fig1 = px.line(
         rolling(con, team),
-        x="date",
-        y=["roll_att", "roll_cap"],
-        labels={"value": "3-Game Avg", "date": "Date"},
-        title="Rolling Attendance vs Capacity",
+        x="game_date",
+        y="roll_att",
+        labels={"roll_att": "3-Game Avg Attendance", "game_date": "Date"},
+        title="Rolling Home-Game Attendance"
     )
+    df_wd = weekday(con, team)
+    # Make sure weekdays appear in logical order (Sun-Sat) in the heat-map
+    weekday_order = ["0", "1", "2", "3", "4", "5", "6"]
+    df_wd["weekday"] = pd.Categorical(df_wd["weekday"], categories=weekday_order, ordered=True)
+
     fig2 = px.imshow(
-        weekday(con, team).pivot("weekday", "season", "sell"),
+        df_wd.pivot(index="weekday", columns="year", values="avg_att"),
         aspect="auto",
-        labels=dict(color="Sell-through"),
-        title="Weekday Effect",
+        labels=dict(color="Avg Attendance"),
+        title="Average Attendance by Weekday & Season",
     )
+
+    # Optional: nicer y-axis tick labels
+    fig2.update_yaxes(
+        tickmode="array",
+        tickvals=list(range(7)),
+        ticktext=["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"],
+    )
+
+    df_yr = annual(con, team)
     fig3 = px.line(
-        annual(con, team),
-        x="season",
-        y="sell",
+        df_yr,
+        x="year",
+        y="total_att_k",
         markers=True,
-        title="Season-over-Season Sell-through",
+        labels={"total_att_k": "Total Attendance (thousands)", "year": "Season"},
+        title="Season-over-Season Total Attendance",
     )
     con.close()
 
