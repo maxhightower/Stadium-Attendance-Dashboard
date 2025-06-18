@@ -2,19 +2,23 @@
 # Stadium Attendance Dashboard
 Interactive, static‑HTML dashboard visualising MLB stadium attendance and sell‑through trends using only public data.
 
-## Quick start
-```bash
-# 1Create env
-python -m venv .venv && source .venv/bin/activate  # Windows: .venv\Scripts\Activate.ps1
-pip install -r requirements.txt                    # or: conda env create -f environment.yml
+## Quick start
 
-# Download raw CSVs
+```bash
+# 1) Clone and install
+git clone https://github.com/<you>/stadium-attendance-dashboard.git
+cd stadium-attendance-dashboard
+python -m venv .venv && .\.venv\Scripts\Activate.ps1   # Linux/macOS: source .venv/bin/activate
+pip install -r requirements.txt
+
+# 2) Download data (1 file, ~90 KB)
 python scripts/fetch_data.py
 
-# Build DuckDB + dashboard.html
-python scripts/build_dashboard.py --team "Atlanta Braves"
+# 3) Build the interactive dashboard
+python scripts/build_dashboard.py --team "Dallas Cowboys"
 
-# Open html/dashboard.html in a browser
+# 4) Open the result
+start html\dashboard.html   # macOS: open ..., Linux: xdg-open ...
 ```
 
 ## Directory tree
