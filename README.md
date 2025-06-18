@@ -4,17 +4,17 @@ Interactive, static‑HTML dashboard visualising MLB stadium attendance and sell
 
 ## Quick start
 ```bash
-# 1️⃣ Create env
+# 1Create env
 python -m venv .venv && source .venv/bin/activate  # Windows: .venv\Scripts\Activate.ps1
 pip install -r requirements.txt                    # or: conda env create -f environment.yml
 
-# 2️⃣ Download raw CSVs
+# Download raw CSVs
 python scripts/fetch_data.py
 
-# 3️⃣ Build DuckDB + dashboard.html
+# Build DuckDB + dashboard.html
 python scripts/build_dashboard.py --team "Atlanta Braves"
 
-# 4️⃣ Open html/dashboard.html in a browser
+# Open html/dashboard.html in a browser
 ```
 
 ## Directory tree
