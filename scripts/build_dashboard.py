@@ -7,7 +7,7 @@ Run:
 """
 import argparse
 from pathlib import Path
-
+import os
 import duckdb
 import pandas as pd
 import plotly.express as px
@@ -62,7 +62,7 @@ def rolling(con, team: str) -> pd.DataFrame:
                 game_date,
                 attendance,
                 ROW_NUMBER() OVER (ORDER BY game_date) rn
-            FROM attendance_week
+            FROM attendance
             WHERE team_name = '{team}'
         )
         SELECT
@@ -80,10 +80,10 @@ def rolling(con, team: str) -> pd.DataFrame:
 def weekday(con, team: str) -> pd.DataFrame:
     query = f"""
         SELECT
-            STRFTIME(game_date, '%w') AS weekday,
+            STRFTIME(week, '%w') AS weekday,
             year,
             AVG(attendance) AS avg_att
-        FROM attendance_week
+        FROM attendance
         WHERE team_name = '{team}'
         GROUP BY 1, 2
         ORDER BY 2, 1;
@@ -95,8 +95,8 @@ def annual(con, team: str) -> pd.DataFrame:
     query = f"""
         SELECT
             year,
-            SUM(attendance) / 1000.0 AS total_att_k
-        FROM attendance_week
+            SUM(TRY_CAST(weekly_attendance AS DOUBLE)) / 1000.0 AS total_att_k
+        FROM attendance
         WHERE team_name = '{team}'
         GROUP BY 1
         ORDER BY 1;
@@ -116,11 +116,9 @@ HTML_TEMPLATE = """
 <h1 style="text-align:center">{{ team }} – Attendance Dashboard</h1>
 <div class="plot" id="fig1"></div>
 <div class="plot" id="fig2"></div>
-<div class="plot" id="fig3"></div>
 <script>
 Plotly.newPlot('fig1', {{ fig1.data|safe }}, {{ fig1.layout|safe }});
 Plotly.newPlot('fig2', {{ fig2.data|safe }}, {{ fig2.layout|safe }});
-Plotly.newPlot('fig3', {{ fig3.data|safe }}, {{ fig3.layout|safe }});
 </script>
 </body></html>
 """
@@ -142,6 +140,7 @@ def ensure_table(con):
 
 
 def build_dashboard(team: str = "Dallas Cowboys") -> None:
+    print(f'build dashboard called')
     if not ATT_CSV.exists():
         raise FileNotFoundError("attendance.csv missing – run fetch_data.py first")
 
@@ -150,36 +149,78 @@ def build_dashboard(team: str = "Dallas Cowboys") -> None:
 
     con = duckdb.connect(DB_PATH, read_only=True)
     ensure_table(con)
-    ensure_view(con)
 
-    fig1 = px.line(
-        rolling(con, team),
-        x="game_date",
-        y="roll_att",
-        labels={"roll_att": "3-Game Avg Attendance", "game_date": "Date"},
-        title="Rolling Home-Game Attendance"
-    )
-    df_wd = weekday(con, team)
+
+    print(f"Building dashboard for {team}...")
+    print(f'con:')
+    print(f'{con}')
+
+
+    #ensure_view(con)
+
+    # turn the cvs into the view I want
+    #attendance_df = pd.read_csv(ATT_CSV)
+    #print(f'attendance_df:')
+    #print(attendance_df.head())
+
+    #attendance_df = duckdb.query("SELECT * FROM 'stadium.duckdb'").fetchdf()
+    #attendance_df = duckdb.query("SELECT * FROM 'C:/Users/maxhi/OneDrive/Documents/GitHub/Stadium-Attendance-Dashboard/scripts/data/raw/attendance.csv'").fetchdf()
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    csv_path = os.path.join(script_dir, '..', 'data', 'raw', 'attendance.csv')
+    csv_path = os.path.abspath(csv_path)  # resolves the full absolute path
+
+    attendance_df = duckdb.query(f"SELECT * FROM '{csv_path}'").fetchdf()
+    print(attendance_df.head())
+
+
     # Make sure weekdays appear in logical order (Sun-Sat) in the heat-map
-    weekday_order = ["0", "1", "2", "3", "4", "5", "6"]
-    df_wd["weekday"] = pd.Categorical(df_wd["weekday"], categories=weekday_order, ordered=True)
+    #weekday_order = ["0", "1", "2", "3", "4", "5", "6"]
+    #df_wd = weekday(con, team)
 
-    fig2 = px.imshow(
-        df_wd.pivot(index="weekday", columns="year", values="avg_att"),
+
+    #fig1 = px.line(
+    #    rolling(con, team),
+    #    x="week",
+    #    y="roll_att",
+    #    labels={"roll_att": "3-Game Avg Attendance", "week": "Date"},
+    #    title="Rolling Home-Game Attendance"
+    #)
+
+    # Run pivot-like SQL with FILTER or PIVOT (DuckDB 0.8.0+)
+    pivot_df = duckdb.query("""
+        SELECT
+            year,
+            week,
+            AVG(TRY_CAST(weekly_attendance AS DOUBLE)) OVER (
+                PARTITION BY year
+                ORDER BY week
+                ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+            ) AS running_avg_att
+        FROM (SELECT * FROM 'data/raw/attendance.csv')
+        ORDER BY year, week;
+    """).to_df()
+
+    # Set week as index so plotly knows it's the y-axis
+    pivot_df.set_index("week", inplace=True)
+
+    # Now use plotly
+    fig1 = px.imshow(
+        pivot_df,
         aspect="auto",
         labels=dict(color="Avg Attendance"),
-        title="Average Attendance by Weekday & Season",
+        title="Average Attendance by Week & Season",
     )
+    fig1.show()
 
     # Optional: nicer y-axis tick labels
-    fig2.update_yaxes(
+    fig1.update_yaxes(
         tickmode="array",
         tickvals=list(range(7)),
         ticktext=["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"],
     )
 
     df_yr = annual(con, team)
-    fig3 = px.line(
+    fig2 = px.line(
         df_yr,
         x="year",
         y="total_att_k",
@@ -192,11 +233,14 @@ def build_dashboard(team: str = "Dallas Cowboys") -> None:
     HTML_OUT.parent.mkdir(parents=True, exist_ok=True)
     HTML_OUT.write_text(
         Template(HTML_TEMPLATE).render(
-            team=team, fig1=fig1.to_dict(), fig2=fig2.to_dict(), fig3=fig3.to_dict()
+            team=team, fig1=fig1.to_dict(), fig2=fig2.to_dict()
         ),
         encoding="utf-8",
     )
-    print(f"✔ Dashboard saved to {HTML_OUT.relative_to(Path.cwd())}")
+    try:
+        print(f"✔ Dashboard saved to {HTML_OUT.resolve().relative_to(Path.cwd())}")
+    except ValueError:
+        print(f"✔ Dashboard saved to {HTML_OUT.resolve()}")
 
 
 # ──────────────────────────────────────────────────────────────
@@ -204,7 +248,10 @@ def build_dashboard(team: str = "Dallas Cowboys") -> None:
 # ──────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Build NFL attendance dashboard")
+    print('parsed 1')
     parser.add_argument("--team", default="Dallas Cowboys", help="Team name (as it appears in CSV)")
+    print(f'parsed 2')
     args = parser.parse_args()
+    print(f'args 1')
     build_dashboard(args.team)
 
